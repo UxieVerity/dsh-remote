@@ -68,7 +68,7 @@ git clone <REPO_URL> ~/.dsh/skills/dsh-remote
 - **手机不直连电脑**：电脑只主动外连服务器的 7000，不需要公网 IP、端口映射或路由器设置。
 - **DSH 只监听回环**：`127.0.0.1:3080`，不暴露到局域网。
 - **服务器只转发**：不解析、不重写 DSH 业务协议；nginx 保留真实 `Host`，让 DSH 的 Host 信任围栏和登录插件正常工作。
-- **三层认证**：TLS → 门户 basic auth → DSH 用户名/密码（`dsh-web-startup-auth`）。
+- **分层认证**：TLS 保护传输；门户 basic auth 只保护入口页；每台 PC 另有独立的 DSH 用户名/密码（`dsh-web-startup-auth`）。
 - **无窗口后台**：Windows 计划任务通过 `wscript.exe` 调用 VBS，以隐藏窗口启动 `frpc`；不会出现黑色控制台。
 - **证书用 DNS-01 通配符**：`*.example.com` 覆盖 `dsh`、`pc-a`、`pc-b`；不覆盖裸域，裸域继续用原证书。
 

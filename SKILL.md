@@ -55,7 +55,7 @@ phone -> https://dsh.BASE_DOMAIN  -> nginx portal (basic auth)
 
 - `frps` and `frpc` carry raw TCP; nginx terminates TLS and adds the portal.
 - The certificate is a wildcard `*.BASE_DOMAIN`, so `dsh`, `pc-a`, and `pc-b` share it. The apex/`www` keeps its existing certificate.
-- DSH's own username/password plugin is a second, independent auth layer. Portal basic auth is not the DSH password.
+- The DSH username/password plugin is a separate auth layer from the portal. Portal basic auth is not the DSH password, and it does not gate the PC subdomains.
 - The server can read plaintext between nginx and DSH; state this explicitly in the security notes.
 
 ## Workflow
