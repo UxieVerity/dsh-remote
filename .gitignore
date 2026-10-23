@@ -1,0 +1,31 @@
+# Local deployment state, never commit
+deploy.local/
+*.local
+*.local.*
+credentials*
+*credentials*
+*.secret
+secrets/
+
+# TLS material
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+acme/
+
+# frp/runtime artifacts
+frpc.toml
+frps.toml
+frpc.log
+frps.log
+dsh-web.err.log
+*.log
+
+# Node/editor/temp
+node_modules/
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak

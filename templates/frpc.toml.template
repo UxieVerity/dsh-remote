@@ -1,0 +1,22 @@
+# frpc.toml - rendered by scripts/windows/New-DshClient.ps1
+# Do not commit a rendered copy; it contains the frp token.
+
+serverAddr = "__SERVER_IP__"
+serverPort = 7000
+
+auth.method = "token"
+auth.token = "__FRP_TOKEN__"
+
+# Keep retrying if the server is temporarily unreachable.
+loginFailExit = false
+
+[[proxies]]
+name = "__PC_NAME__-dsh"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 3080
+remotePort = __REMOTE_PORT__
+
+log.to = "__FRPC_LOG__"
+log.level = "info"
+log.maxDays = 3

@@ -1,0 +1,25 @@
+# frps.toml - rendered by scripts/server/install-frps.sh
+# Do not commit a rendered copy.
+
+bindAddr = "0.0.0.0"
+bindPort = 7000
+
+# Remote proxy ports must bind to loopback; nginx is the only public listener.
+proxyBindAddr = "127.0.0.1"
+
+# Only these remote ports may be allocated.
+allowPorts = [
+  { start = 13080, end = 13099 },
+]
+
+auth.method = "token"
+auth.token = "__FRP_TOKEN__"
+
+webServer.addr = "127.0.0.1"
+webServer.port = 7500
+webServer.user = "admin"
+webServer.password = "__DASHBOARD_PASSWORD__"
+
+log.to = "/var/log/frps.log"
+log.level = "info"
+log.maxDays = 7
