@@ -3,7 +3,6 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet("pc-a", "pc-b")]
     [string]$PcName,
 
     [Parameter(Mandatory)]
@@ -15,18 +14,19 @@ param(
     [Parameter(Mandatory)]
     [string]$FrpToken,
 
-    [int]$RemotePort = 0,
+    [Parameter(Mandatory)]
+    [int]$RemotePort,
 
     [string]$Root = "C:\dsh-relay"
 )
 
 $ErrorActionPreference = "Stop"
 
-if ($RemotePort -eq 0) {
-    $RemotePort = if ($PcName -eq "pc-a") { 13080 } else { 13081 }
+if ($PcName -notmatch '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$') {
+    throw "PcName must be a lowercase DNS label (1-63 chars, letters/digits/hyphen, no leading/trailing hyphen)"
 }
-if ($RemotePort -lt 13080 -or $RemotePort -gt 13099) {
-    throw "RemotePort must be between 13080 and 13099"
+if ($RemotePort -lt 13080 -or $RemotePort -gt 65535) {
+    throw "RemotePort must be between 13080 and 65535"
 }
 if ($FrpToken.Length -lt 32) {
     throw "FrpToken must be at least 32 characters (64 hex recommended)"

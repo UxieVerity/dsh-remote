@@ -15,6 +15,8 @@ Use placeholders until the user supplies values. Put real values only in `deploy
 | `PORTAL_PASSWORD` | nginx basic auth | Generate with `openssl rand -base64 24` |
 | `DSH_ADMIN_USER` | DSH login | Set on first `/login` visit, or via a password manager |
 | `DSH_ADMIN_PASSWORD` | DSH login | Never store in the repo; not the same as the portal password |
+| `PC_NAMES` | `add-pc.sh`, DNS | One lowercase DNS label per PC; no fixed count |
+| `PORT_BASE` | `add-pc.sh` | First port, default 13080 |
 | `ACME_EMAIL` | Let's Encrypt | Use a real mailbox you control |
 
 ## Ports
@@ -25,7 +27,7 @@ Use placeholders until the user supplies values. Put real values only in `deploy
 | 443 | nginx | yes | TLS portal + PC reverse proxy |
 | 7000 | frps | yes | frpc control/data |
 | 7500 | frps | no | dashboard, `127.0.0.1` |
-| 13080-13099 | frps | no | remote ports, `127.0.0.1` |
+| 13080-65535 | frps | no | per-PC remote ports, `127.0.0.1` |
 | 3080 | DSH | no | each PC, `127.0.0.1` |
 
 ## Generate values

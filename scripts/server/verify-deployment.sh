@@ -5,11 +5,13 @@
 #   BASE_DOMAIN
 # Optional:
 #   PORTAL_USER, PORTAL_PASSWORD  (if set, also checks authenticated portal access)
+#   PCS_JSON                      default /srv/dsh-portal/pcs.json
 set -u
 
 BASE_DOMAIN="${BASE_DOMAIN:-}"
 PORTAL_USER="${PORTAL_USER:-}"
 PORTAL_PASSWORD="${PORTAL_PASSWORD:-}"
+PCS_JSON="${PCS_JSON:-/srv/dsh-portal/pcs.json}"
 FAIL=0
 
 if [[ -z "$BASE_DOMAIN" ]]; then
@@ -39,6 +41,25 @@ check_code() {
   fi
 }
 
+pc_names() {
+  [[ -f "$PCS_JSON" ]] || return 0
+  command -v python3 >/dev/null || return 0
+  python3 - "$PCS_JSON" <<'PY'
+import json
+import sys
+
+try:
+    entries = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    entries = []
+for entry in entries:
+    if isinstance(entry, dict):
+        name = entry.get("id")
+        if isinstance(name, str) and name:
+            print(name)
+PY
+}
+
 echo "== services =="
 systemctl is-enabled frps >/dev/null 2>&1 && echo "OK   frps enabled" || { echo "FAIL frps not enabled"; FAIL=1; }
 systemctl is-active --quiet frps && echo "OK   frps active" || { echo "FAIL frps not active"; FAIL=1; }
@@ -55,8 +76,16 @@ check_code "portal unauthenticated" 401 "https://dsh.${BASE_DOMAIN}/"
 check_code "portal authenticated" 200 "https://dsh.${BASE_DOMAIN}/" yes
 check_code "portal manifest" 200 "https://dsh.${BASE_DOMAIN}/manifest.webmanifest" yes
 check_code "portal service worker" 200 "https://dsh.${BASE_DOMAIN}/sw.js" yes
-check_code "pc-a login page" 200 "https://pc-a.${BASE_DOMAIN}/login"
-check_code "pc-b login page" 200 "https://pc-b.${BASE_DOMAIN}/login"
+check_code "portal PC registry" 200 "https://dsh.${BASE_DOMAIN}/pcs.json" yes
+
+mapfile -t PCS < <(pc_names)
+if [[ "${#PCS[@]}" -eq 0 ]]; then
+  echo "SKIP no PCs registered in $PCS_JSON"
+else
+  for name in "${PCS[@]}"; do
+    check_code "pc ${name} login page" 200 "https://${name}.${BASE_DOMAIN}/login"
+  done
+fi
 
 echo
 echo "== certificate =="

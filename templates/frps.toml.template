@@ -7,9 +7,10 @@ bindPort = 7000
 # Remote proxy ports must bind to loopback; nginx is the only public listener.
 proxyBindAddr = "127.0.0.1"
 
-# Only these remote ports may be allocated.
+# No PC count is hardcoded. The allocator starts at 13080; the upper bound is
+# the OS port space. Each PC gets one unique loopback port.
 allowPorts = [
-  { start = 13080, end = 13099 },
+  { start = 13080, end = 65535 },
 ]
 
 auth.method = "token"

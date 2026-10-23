@@ -20,8 +20,7 @@ Phone
   ▼
 nginx :443
   ├─ dsh.example.com  -> /srv/dsh-portal (basic auth + PWA)
-  ├─ pc-a.example.com -> http://127.0.0.1:13080
-  └─ pc-b.example.com -> http://127.0.0.1:13081
+  └─ <name>.example.com -> http://127.0.0.1:<port>   (one generated block per PC)
                               │
                               ▼
                           frps :7000
@@ -29,7 +28,7 @@ nginx :443
                               │ outbound TCP, token auth
                     ┌─────────┴─────────┐
                     │                   │
-                 frpc PC A           frpc PC B
+                 frpc PC 1           frpc PC N
                     │                   │
                     ▼                   ▼
              127.0.0.1:3080      127.0.0.1:3080
@@ -37,9 +36,10 @@ nginx :443
 ```
 
 - The PCs make **outbound** connections to `SERVER_IP:7000`; no port forwarding on the PC/router.
-- `frps` binds remote ports `13080/13081` to loopback only.
+- `frps` binds every allocated remote port (`13080-65535`) to loopback only.
 - nginx is the only public HTTP/TLS listener.
 - DSH binds loopback only; it is never directly reachable from the LAN.
+- There is no fixed PC count. `add-pc.sh` allocates a unique port and writes one nginx block per PC.
 
 ## Hostnames and certificate
 
@@ -48,13 +48,21 @@ Recommended DNS:
 | Name | Type | Value | Purpose |
 |---|---|---|---|
 | `dsh.BASE_DOMAIN` | A | `SERVER_IP` | Portal/PWA |
-| `pc-a.BASE_DOMAIN` | A | `SERVER_IP` | PC A |
-| `pc-b.BASE_DOMAIN` | A | `SERVER_IP` | PC B |
+| `<name>.BASE_DOMAIN` | A | `SERVER_IP` | One per PC; any valid DNS label |
+| `*.BASE_DOMAIN` | A | `SERVER_IP` | Optional wildcard instead of per-PC records |
 | `frp.BASE_DOMAIN` | A | `SERVER_IP` | Optional; frpc can use the IP directly |
 
-A wildcard `*.BASE_DOMAIN` certificate covers `dsh`, `pc-a`, and `pc-b`. It does **not** cover the apex `BASE_DOMAIN` or `www`; keep the existing certificate for those names.
+A wildcard `*.BASE_DOMAIN` certificate covers `dsh`, every one-level PC name, and any future `pc-n`. It does **not** cover the apex `BASE_DOMAIN` or `www`; keep the existing certificate for those names.
 
 Apex/www and wildcard can coexist as separate nginx `server` blocks. Do not replace the existing site's certificate just to add subdomains.
+
+## Adding PC N
+
+1. Create `<name>.BASE_DOMAIN` A record (or use `*.BASE_DOMAIN`).
+2. On the server: `sudo -E BASE_DOMAIN=... bash scripts/server/add-pc.sh --name <name>`.
+3. Use the printed port in `New-DshClient.ps1` on that Windows PC, then register its hidden tasks.
+
+The main nginx site file is not edited. Only one generated file is added; the portal list is updated. There is no `pc-a`/`pc-b` allow-list and no fixed count; the allocator uses the loopback port space.
 
 ## Trust boundaries
 
@@ -103,4 +111,5 @@ DSH sets framing protections and its UI is not designed for embedding. The porta
 - The server sees plaintext upstream traffic.
 - PC sleep/hibernate or user logoff breaks the tunnel.
 - If the PC reboots and nobody logs in, DSH (and a per-user frpc task) will not start.
+- Each PC consumes one loopback port; the practical ceiling is the OS port space, not a fixed `pc-a`/`pc-b` list.
 - A wildcard certificate renewal needs DNS control; HTTP-01 may be blocked by ICP.

@@ -4,7 +4,7 @@ Use this order: DNS/TLS -> nginx -> frps -> frpc -> DSH -> auth -> browser.
 
 ## 502 Bad Gateway
 
-`502` from nginx means it cannot reach the upstream `127.0.0.1:13080` (or `13081`).
+`502` from nginx means it cannot reach the PC's upstream loopback port (for example `127.0.0.1:13080`). The port is the one printed by `add-pc.sh` and written in `/etc/nginx/dsh-pcs/<name>.conf`.
 
 ```bash
 ss -lntp | grep -E ':(13080|13081)\b'
@@ -81,6 +81,14 @@ proxy_set_header Connection $dsh_connection_upgrade;
 
 Check `map` exists in the `http` context. Test with browser DevTools -> Network -> WS. A `400`/`426` usually means upgrade headers were stripped.
 
+## add-pc.sh fails
+
+- `the nginx site does not include /etc/nginx/dsh-pcs`: rerun `install-nginx-site.sh`; the main config predates the per-PC include.
+- `name is already registered`: remove it first, or use another label.
+- `port ... is already allocated or listening`: choose `--port`, or check `ss -lntp | grep <port>`.
+- `nginx -t` failure: the script restores the registry/JSON/config. Read the nginx error, fix the generated block or certificate, and retry.
+- `pcs.json` not updating: check `/srv/dsh-portal` permissions and `python3`.
+
 ## Port 7000 timeout
 
 - Cloud security group missing 7000.
@@ -137,7 +145,7 @@ Closing the old console sends `STATUS_CONTROL_C_EXIT` (`0xC000013A`); after the 
 
 - `267009` (`0x41301`) = running, normal.
 - `0xC000013A` = control-C/console closed; fix the hidden wrapper.
-- `dsh-web-pc-a` exits quickly if DSH fails to start or port 3080 is already in use. Check `dsh-web.err.log`.
+- `dsh-web-<name>` exits quickly if DSH fails to start or port 3080 is already in use. Check `dsh-web.err.log`.
 - AtLogOn tasks do not run before the user logs in. That is expected; use auto-login or accept the limitation.
 
 ## DSH Web exits immediately

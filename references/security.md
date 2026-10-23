@@ -16,7 +16,7 @@ The relay exposes a browser UI that can run commands on each PC. Treat DSH acces
 ## Authentication layers
 
 1. **TLS** authenticates the server to the phone and encrypts the public hop.
-2. **nginx basic auth** gates the portal (`/srv/dsh-portal`) only. It does not protect `pc-a`/`pc-b` by itself.
+2. **nginx basic auth** gates the portal (`/srv/dsh-portal`) only. It does not protect the per-PC subdomains by itself.
 3. **DSH login** (`dsh-web-startup-auth`) gates `/api/*` and third-party RPC routes on each PC.
 4. **frp token** authenticates frpc to frps. It does not authenticate a browser.
 
@@ -33,7 +33,7 @@ Public:
 Never public:
 
 - 7500: frps dashboard.
-- 13080-13099: frp remote ports.
+- 13080-65535: per-PC frp remote ports.
 - 3080: DSH Web.
 - SSH: restrict to admin IPs and keys.
 

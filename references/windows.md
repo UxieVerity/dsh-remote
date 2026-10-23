@@ -78,7 +78,7 @@ C:\dsh-relay\start-frpc-hidden.vbs
 C:\dsh-relay\register-pc-tasks.ps1
 ```
 
-PC B uses `-PcName pc-b -RemotePort 13081`.
+Any other PC uses the same script with its own name and the port printed by `add-pc.sh`; there is no `pc-a`/`pc-b` allow-list. For example: `-PcName pc-c -RemotePort 13082`.
 
 The generated `start-dsh-web.cmd` contains:
 
@@ -144,7 +144,7 @@ What gets registered:
 | Task | Trigger | Action |
 |---|---|---|
 | `dsh-frpc` | At logon of the current user | `wscript.exe //B //Nologo C:\dsh-relay\start-frpc-hidden.vbs` |
-| `dsh-web-pc-a` | At logon of the current user | `cmd.exe /c C:\dsh-relay\run-dsh-web.cmd` |
+| `dsh-web-<name>` | At logon of the current user | `cmd.exe /c C:\dsh-relay\run-dsh-web.cmd` |
 
 No admin required. Both run at `RunLevel Limited`.
 
@@ -177,8 +177,8 @@ Do not redirect DSH stdout to a shared log. The token is equivalent to control o
 ## 7. Verify tasks
 
 ```powershell
-Get-ScheduledTask -TaskName dsh-frpc,dsh-web-pc-a | Select TaskName,State
-Get-ScheduledTask -TaskName dsh-frpc,dsh-web-pc-a | Get-ScheduledTaskInfo
+Get-ScheduledTask -TaskName dsh-frpc,dsh-web-<name> | Select TaskName,State
+Get-ScheduledTask -TaskName dsh-frpc,dsh-web-<name> | Get-ScheduledTaskInfo
 Get-Process frpc,wscript | Select Id,ProcessName,MainWindowHandle
 Get-NetTCPConnection -LocalPort 3080 -State Listen
 ```
@@ -206,8 +206,8 @@ This runs the same hidden VBS at boot. It does **not** make DSH available before
 ## 9. First remote login
 
 1. Open `https://dsh.BASE_DOMAIN/` and pass portal basic auth.
-2. Click PC A.
-3. On `https://pc-a.BASE_DOMAIN/login`, sign in with the DSH admin account.
+2. Click a registered PC (or enter its name in the portal).
+3. On `https://<name>.BASE_DOMAIN/login`, sign in with that PC's DSH admin account.
 4. Add the portal to the home screen for PWA behavior.
 
 If the DSH admin password is lost:
@@ -226,9 +226,9 @@ Get-Content C:\dsh-relay\frpc.log -Tail 50
 Get-Content C:\dsh-relay\dsh-web.err.log -Tail 50
 
 Stop-ScheduledTask dsh-frpc
-Stop-ScheduledTask dsh-web-pc-a
+Stop-ScheduledTask dsh-web-<name>
 Start-ScheduledTask dsh-frpc
-Start-ScheduledTask dsh-web-pc-a
+Start-ScheduledTask dsh-web-<name>
 ```
 
 If you stop a task, also kill any orphaned process:

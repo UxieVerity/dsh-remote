@@ -3,13 +3,15 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet("pc-a", "pc-b")]
     [string]$PcName,
 
     [string]$Root = "C:\dsh-relay"
 )
 
 $ErrorActionPreference = "Stop"
+if ($PcName -notmatch '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$') {
+    throw "PcName must be a lowercase DNS label (1-63 chars, letters/digits/hyphen, no leading/trailing hyphen)"
+}
 $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 $cmdExe = Join-Path $env:SystemRoot "System32\cmd.exe"
 $wscript = Join-Path $env:SystemRoot "System32\wscript.exe"

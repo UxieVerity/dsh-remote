@@ -32,6 +32,7 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith("/api/")) return;
   if (url.pathname === "/login") return;
+  if (url.pathname === "/pcs.json") return;
 
   if (request.mode === "navigate") {
     event.respondWith(

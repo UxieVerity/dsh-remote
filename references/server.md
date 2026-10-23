@@ -19,7 +19,7 @@ Answer these before adding the relay:
 - Does nginx already own 80/443?
 - Which `server_name`s and default server exist?
 - Is `frps` already installed?
-- Are 7000/7500/13080/13081 free?
+- Are 7000/7500/13080+ free?
 - Is the cloud security group open for 80/443/7000?
 
 Back up the nginx tree if it is not already versioned:
@@ -30,13 +30,14 @@ sudo tar -C /etc -czf /root/nginx-backup-$(date +%F-%H%M).tar.gz nginx
 
 ## 1. DNS
 
-Add:
+Add a record for the portal and one per PC. There is no fixed PC count; a wildcard A record is also valid:
 
 ```text
 dsh.BASE_DOMAIN    A    SERVER_IP
 pc-a.BASE_DOMAIN   A    SERVER_IP
 pc-b.BASE_DOMAIN   A    SERVER_IP
-# optional: frp.BASE_DOMAIN A SERVER_IP
+pc-c.BASE_DOMAIN   A    SERVER_IP
+# optional: *.BASE_DOMAIN A SERVER_IP
 ```
 
 Verify from an external network, not only the server:
@@ -44,7 +45,7 @@ Verify from an external network, not only the server:
 ```bash
 dig +short dsh.BASE_DOMAIN
 dig +short pc-a.BASE_DOMAIN
-dig +short pc-b.BASE_DOMAIN
+dig +short pc-c.BASE_DOMAIN
 ```
 
 Do not put the relay behind an HTTP-only CDN proxy: frpc needs raw TCP 7000.
@@ -77,12 +78,12 @@ Critical config:
 bindAddr = "0.0.0.0"
 bindPort = 7000
 proxyBindAddr = "127.0.0.1"
-allowPorts = [{ start = 13080, end = 13099 }]
+allowPorts = [{ start = 13080, end = 65535 }]
 webServer.addr = "127.0.0.1"
 webServer.port = 7500
 ```
 
-`proxyBindAddr` is what keeps `13080/13081` off the public interface. nginx reaches them over loopback.
+`proxyBindAddr` keeps every remote port on loopback. nginx reaches them, the public internet does not. The allocator starts at 13080; the upper bound is the OS port space, not a hardcoded PC count.
 
 Verify:
 
@@ -172,20 +173,52 @@ The script:
 - renders `templates/nginx-dsh-relay.conf.template` to
   `/etc/nginx/sites-available/dsh-relay.conf`;
 - enables it with a symlink in `sites-enabled`;
-- copies `templates/portal/` to `/srv/dsh-portal`;
+- creates `/etc/nginx/dsh-pcs/` for generated per-PC blocks and includes
+  `/etc/nginx/dsh-pcs/*.conf` from the site config;
+- copies `templates/portal/` to `/srv/dsh-portal`, preserving an existing
+  `pcs.json` registry;
 - creates `/etc/nginx/.htpasswd-dsh` (640, `root:www-data`);
 - runs `nginx -t` and reloads nginx.
 
-The template has three HTTP server blocks (ACME + redirect) and three HTTPS blocks (portal + PC A + PC B). Existing sites are untouched; exact `server_name` matches take precedence.
+The main template contains only the portal and the shared `map`. Per-PC server blocks are generated on demand, so the site config does not change when you add PC C, D, ... N.
 
-Order matters: the certificate symlinks must exist before `nginx -t`, otherwise nginx fails to start/reload.
+### Add PC C / D / ... N
+
+```bash
+sudo -E BASE_DOMAIN="$BASE_DOMAIN" \
+  bash scripts/server/add-pc.sh --name pc-c --label "PC C" --desc "备用工作站"
+```
+
+`add-pc.sh`:
+
+- validates the name as a DNS label and rejects reserved names;
+- allocates the next free loopback port from `13080-65535`;
+- renders `/etc/nginx/dsh-pcs/<name>.conf`;
+- appends `/etc/dsh-relay/pcs.tsv`;
+- updates `/srv/dsh-portal/pcs.json`;
+- rolls back the config, registry, and JSON if `nginx -t` fails;
+- reloads nginx and prints the Windows `New-DshClient.ps1` command with the port.
+
+Use `--port 13082` to pin a specific port. The only practical ceiling is the number of free loopback ports; there is no `pc-a`/`pc-b` allow-list.
+
+### Remove a PC
+
+```bash
+sudo bash scripts/server/remove-pc.sh --name pc-c
+```
+
+This removes `/etc/nginx/dsh-pcs/pc-c.conf`, the `pcs.tsv` row, and the `pcs.json` entry, then tests and reloads nginx. It does not touch the Windows PC; stop `dsh-frpc` and `dsh-web-pc-c` there separately.
+
+Existing sites are untouched: each generated block uses an exact `server_name`, so its match beats any default server. Order matters: the certificate symlinks must exist before `nginx -t`.
+
+If you are upgrading an older fixed `pc-a`/`pc-b` template, note that the new main config no longer contains those blocks. Recreate them with `add-pc.sh` after the upgrade; if `frps` is still holding the old port, use `--port` with a new free port and update that PC's `frpc.toml`/task.
 
 ## 5. Firewall / security group
 
 Cloud security group:
 
 - inbound 80/tcp, 443/tcp, 7000/tcp
-- no inbound 7500, 13080-13099, or 3080
+- no inbound 7500, 13080-65535, or 3080
 
 Host firewall, if enabled:
 
@@ -203,8 +236,9 @@ If 7000 can be restricted to the PCs' egress IPs, do it. Otherwise keep a long r
 The portal is static HTML/JS in `/srv/dsh-portal`:
 
 - `index.html` has `__BASE_DOMAIN__` replaced at install time;
+- `pcs.json` is the PC list read by the portal; `add-pc.sh` updates it and `install-nginx-site.sh` preserves it;
 - `manifest.webmanifest` makes it installable;
-- `sw.js` caches only static shell files, never `/api/*`;
+- `sw.js` caches only static shell files, never `/api/*` or `pcs.json`;
 - `robots.txt` disallows crawling.
 
 Basic auth is enforced by nginx, not JavaScript.
@@ -223,20 +257,29 @@ Manual checks:
 curl -sS -o /dev/null -w 'portal no auth: %{http_code}\n' https://dsh.BASE_DOMAIN/
 curl -sS -u "$PORTAL_USER:$PORTAL_PASSWORD" -o /dev/null -w 'portal auth: %{http_code}\n' https://dsh.BASE_DOMAIN/
 curl -sS -o /dev/null -w 'pc-a login: %{http_code}\n' https://pc-a.BASE_DOMAIN/login
-curl -sS -o /dev/null -w 'pc-a root: %{http_code}\n' https://pc-a.BASE_DOMAIN/
+curl -sS -o /dev/null -w 'pc-c login: %{http_code}\n' https://pc-c.BASE_DOMAIN/login
 ```
 
-Expected before the PC connects: `pc-a` may return 502. After frpc + DSH are up: `/login` 200, `/` 401 unauthenticated, `/` 200 after DSH login.
+Expected before a PC connects: that PC may return 502. After frpc + DSH are up: `/login` 200, `/` 401 unauthenticated, `/` 200 after DSH login. `verify-deployment.sh` loops over every entry in `pcs.json`; add or remove a PC and rerun it.
 
-Certificate trust must be checked without `-k`:
+Certificate trust must be checked without `-k`, for the portal and every registered PC:
 
 ```bash
 BASE_DOMAIN="$BASE_DOMAIN" python3 - <<'PY'
+import json
 import os
 import urllib.error
 import urllib.request
+
 domain = os.environ["BASE_DOMAIN"]
-for host in ("dsh", "pc-a", "pc-b"):
+hosts = ["dsh"]
+try:
+    entries = json.load(open("/srv/dsh-portal/pcs.json", encoding="utf-8"))
+    hosts += [e["id"] for e in entries if isinstance(e, dict) and e.get("id")]
+except Exception:
+    pass
+
+for host in hosts:
     url = f"https://{host}.{domain}/"
     try:
         urllib.request.urlopen(url, timeout=15)
@@ -245,7 +288,7 @@ for host in ("dsh", "pc-a", "pc-b"):
 PY
 ```
 
-(Replace `BASE_DOMAIN`; `HTTPError` still means TLS succeeded.)
+`HTTPError` still means TLS succeeded. A certificate for `*.BASE_DOMAIN` covers every one-level PC name; it does not cover the apex.
 
 ## 8. Upgrades and rollback
 

@@ -170,6 +170,78 @@
       line-height: 1;
     }
 
+    .empty {
+      grid-column: 1 / -1;
+      padding: 18px;
+      border: 1px dashed var(--line);
+      border-radius: 14px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .custom {
+      margin-top: 18px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(14, 22, 38, .65);
+    }
+
+    .custom label {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .row {
+      display: flex;
+      gap: 8px;
+    }
+
+    .row input {
+      min-width: 0;
+      flex: 1;
+      padding: 11px 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--bg);
+      color: var(--text);
+      font: inherit;
+      font-size: 14px;
+    }
+
+    .row input:focus {
+      outline: none;
+      border-color: rgba(94, 234, 212, .55);
+    }
+
+    .row button {
+      flex: 0 0 auto;
+      padding: 11px 16px;
+      border: 0;
+      border-radius: 10px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #06111f;
+      font: inherit;
+      font-size: 14px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    .row button:disabled {
+      opacity: .5;
+      cursor: not-allowed;
+    }
+
+    .hint {
+      margin: 8px 0 0;
+      color: #71829f;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
     .note {
       margin-top: 24px;
       padding: 14px 16px;
@@ -221,7 +293,22 @@
       通过 TLS 中转打开对应电脑上的 DSH Web。电脑只主动外连服务器，不需要公网 IP。
     </p>
 
-    <section class="grid" id="pcs" aria-label="电脑列表"></section>
+    <section class="grid" id="pcs" aria-label="电脑列表">
+      <div class="empty">正在读取电脑列表...</div>
+    </section>
+
+    <form class="custom" id="custom">
+      <label for="pc-name">或直接输入电脑名（例如 pc-c）</label>
+      <div class="row">
+        <input id="pc-name" name="pc-name" autocomplete="off" spellcheck="false"
+               pattern="[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+               placeholder="pc-c" aria-describedby="pc-hint">
+        <button type="submit">打开</button>
+      </div>
+      <p class="hint" id="pc-hint">
+        只填子域名前缀，不要带协议或点号。电脑必须先通过 add-pc.sh 注册，并配置好 frpc。
+      </p>
+    </form>
 
     <div class="warn" id="config-warning">
       门户域名占位符尚未替换。请重新运行服务器安装脚本。
@@ -241,32 +328,93 @@
     // Replaced at install time by scripts/server/install-nginx-site.sh.
     const BASE_DOMAIN = "__BASE_DOMAIN__";
 
-    const PCS = [
-      { id: "pc-a", name: "电脑 A", desc: "主工作站 · 常开" },
-      { id: "pc-b", name: "电脑 B", desc: "备用工作站 · 常开" }
-    ];
-
     const grid = document.getElementById("pcs");
+    const form = document.getElementById("custom");
+    const input = document.getElementById("pc-name");
+    const labelPattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
     if (!BASE_DOMAIN || BASE_DOMAIN.includes("__")) {
       document.getElementById("config-warning").style.display = "block";
+      input.disabled = true;
+      form.querySelector("button").disabled = true;
     }
 
-    for (const pc of PCS) {
+    function openPc(name) {
+      window.location.assign(`https://${name}.${BASE_DOMAIN}/`);
+    }
+
+    function card(pc) {
       const link = document.createElement("a");
       link.className = "pc";
       link.href = `https://${pc.id}.${BASE_DOMAIN}/`;
       link.rel = "noopener";
-      link.innerHTML = `
-        <div class="pc-top">
-          <span class="pc-id">${pc.id}</span>
-          <span class="dot" aria-hidden="true"></span>
-        </div>
-        <h2 class="pc-name">${pc.name}</h2>
-        <p class="pc-desc">${pc.desc}</p>
-        <span class="pc-open">打开 DSH <span aria-hidden="true">↗</span></span>
-      `;
-      grid.appendChild(link);
+
+      const top = document.createElement("div");
+      top.className = "pc-top";
+
+      const id = document.createElement("span");
+      id.className = "pc-id";
+      id.textContent = pc.id;
+
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      dot.setAttribute("aria-hidden", "true");
+
+      const name = document.createElement("h2");
+      name.className = "pc-name";
+      name.textContent = pc.name || pc.id;
+
+      const desc = document.createElement("p");
+      desc.className = "pc-desc";
+      desc.textContent = pc.desc || "DSH Web";
+
+      const open = document.createElement("span");
+      open.className = "pc-open";
+      open.textContent = "打开 DSH ↗";
+
+      top.append(id, dot);
+      link.append(top, name, desc, open);
+      return link;
     }
+
+    async function loadPcs() {
+      let pcs = [];
+      try {
+        const response = await fetch("/pcs.json", { cache: "no-store" });
+        if (response.ok) {
+          const data = await response.json();
+          if (Array.isArray(data)) pcs = data;
+        }
+      } catch (_) {
+        // Keep the custom-name form usable if the registry is unavailable.
+      }
+
+      grid.replaceChildren();
+      const valid = pcs.filter((pc) => pc && labelPattern.test(pc.id || ""));
+      if (!valid.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "还没有已注册的电脑。请先运行 add-pc.sh，或在下面直接输入电脑名。";
+        grid.appendChild(empty);
+        return;
+      }
+      for (const pc of valid) grid.appendChild(card(pc));
+    }
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const name = input.value.trim().toLowerCase();
+      if (!labelPattern.test(name)) {
+        input.setCustomValidity("请输入 1-63 位小写字母、数字或连字符，且不能以连字符开头/结尾。");
+        input.reportValidity();
+        return;
+      }
+      input.setCustomValidity("");
+      openPc(name);
+    });
+
+    input.addEventListener("input", () => input.setCustomValidity(""));
+    loadPcs();
 
     if ("serviceWorker" in navigator) {
       window.addEventListener("load", () => {

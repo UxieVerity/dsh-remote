@@ -13,7 +13,7 @@ The target is an **L1 page-level relay**: the phone opens each PC's real DSH Web
 
 1. **Never write real deployment values into this repository.** Domains, public IPs, frp tokens, portal passwords, DSH passwords, SSH credentials, and certificate material belong in `deploy.local/` (ignored) or a password manager.
 2. **Do not disturb an existing website.** Inspect `nginx -T`, existing `server_name` blocks, and the default server before adding a site. Back up any file you replace.
-3. **Only 80/443/7000 are public.** `7500` (frps dashboard), `13080-13099` (frp remote ports), and `3080` (DSH) must stay on loopback.
+3. **Only 80/443/7000 are public.** `7500` (frps dashboard), `13080-65535` (frp remote ports), and `3080` (DSH) must stay on loopback.
 4. **Preserve `Host`.** The nginx proxy must send `proxy_set_header Host $host;`. Without it the stock Host trust fence can reject requests and the login flow can see the wrong authority.
 5. **Use DNS-01 for the wildcard certificate.** Some mainland-China clouds return an ICP block on port 80 for new subdomains before nginx is reached, so HTTP-01 can fail even when DNS and nginx are correct.
 6. **Do not log DSH launch tokens.** DSH prints a one-time token on stdout; redirect stdout to nul when running it as a background task, and keep only stderr for diagnostics.
@@ -30,8 +30,8 @@ If a mandatory value is missing, ask for it; do not invent a domain, IP, or pass
 | `BASE_DOMAIN` | Domain suffix | `example.com` |
 | `SERVER_IP` | Public IPv4 of the relay | `<SERVER_IP>` |
 | `PORTAL_HOST` | Portal hostname | `dsh.${BASE_DOMAIN}` |
-| `PC_A_HOST` | PC A hostname | `pc-a.${BASE_DOMAIN}` |
-| `PC_B_HOST` | PC B hostname | `pc-b.${BASE_DOMAIN}` |
+| `PC_NAMES` | One DNS label per PC, any count | `pc-a`, `pc-b`, `pc-c` |
+| `PORT_BASE` | First remote port (allocator) | `13080` |
 | `FRP_TOKEN` | 64-hex shared token | `<generated>` |
 | `PORTAL_USER` / `PORTAL_PASSWORD` | Portal basic auth | `<generated>` |
 | `DASHBOARD_PASSWORD` | frps dashboard password | `<generated>` |
@@ -42,19 +42,20 @@ Port conventions:
 
 - `7000/tcp`: frps control, public.
 - `7500/tcp`: frps dashboard, loopback only.
-- `13080/tcp`: PC A remote port, loopback only.
-- `13081/tcp`: PC B remote port, loopback only.
+- `13080-65535/tcp`: per-PC remote ports, loopback only, allocated by `add-pc.sh`.
 - `3080/tcp`: DSH Web on each PC, loopback only.
 
 ## Architecture in one minute
 
 ```text
 phone -> https://dsh.BASE_DOMAIN  -> nginx portal (basic auth)
-      -> https://pc-a.BASE_DOMAIN -> nginx -> 127.0.0.1:13080 -> frps -> frpc on PC A -> 127.0.0.1:3080
+      -> https://<pc-name>.BASE_DOMAIN -> nginx -> 127.0.0.1:<port> -> frps -> frpc on that PC -> 127.0.0.1:3080
 ```
 
+One generated block per PC; add PC C, D, ... N without editing the main site file.
+
 - `frps` and `frpc` carry raw TCP; nginx terminates TLS and adds the portal.
-- The certificate is a wildcard `*.BASE_DOMAIN`, so `dsh`, `pc-a`, and `pc-b` share it. The apex/`www` keeps its existing certificate.
+- The certificate is a wildcard `*.BASE_DOMAIN`, so `dsh`, `pc-a`, `pc-b`, `pc-c`, ... share it. The apex/`www` keeps its existing certificate.
 - The DSH username/password plugin is a separate auth layer from the portal. Portal basic auth is not the DSH password, and it does not gate the PC subdomains.
 - The server can read plaintext between nginx and DSH; state this explicitly in the security notes.
 
@@ -70,7 +71,7 @@ phone -> https://dsh.BASE_DOMAIN  -> nginx portal (basic auth)
 
 ### Phase 1 - DNS and TLS
 
-1. Add A records for `dsh`, `pc-a`, and `pc-b` to `SERVER_IP`. TTL 300 is convenient during setup.
+1. Add A records for `dsh` and each PC name to `SERVER_IP`; a wildcard `*.BASE_DOMAIN` record also works. TTL 300 is convenient during setup.
 2. Do **not** put the relay behind an HTTP CDN proxy. frpc uses TCP 7000, which an HTTP proxy does not carry.
 3. Issue a wildcard certificate with DNS-01:
 
@@ -116,18 +117,26 @@ sudo -E BASE_DOMAIN=example.com \
   bash scripts/server/install-nginx-site.sh
 ```
 
-This renders `templates/nginx-dsh-relay.conf.template`, copies `templates/portal/` to `/srv/dsh-portal`, creates `/etc/nginx/.htpasswd-dsh`, tests nginx, and reloads it.
+This installs the portal shell and the `/etc/nginx/dsh-pcs/` include directory. It does not bake PC A/B into the config. Add each PC explicitly:
 
-Important nginx details are already in the template:
+```bash
+sudo -E BASE_DOMAIN=example.com \
+  bash scripts/server/add-pc.sh --name pc-a --label "PC A" --desc "主工作站"
+# repeat with pc-b, pc-c, ... any number of unique names
+```
+
+`add-pc.sh` allocates the next free loopback port (`13080-65535`), writes `/etc/nginx/dsh-pcs/<name>.conf`, updates `/etc/dsh-relay/pcs.tsv` and `/srv/dsh-portal/pcs.json`, rolls back on `nginx -t` failure, and reloads nginx. Use `--port` to pin a port. The portal reads `pcs.json`; the main site file is never edited per PC.
+
+Important nginx details are already in the templates:
 
 - `map $http_upgrade $dsh_connection_upgrade` in the `http` context;
 - `proxy_http_version 1.1`, `Upgrade`, and `Connection` for DSH WebSockets;
 - `proxy_set_header Host $host;`
 - long proxy read timeouts and `proxy_buffering off`;
 - HSTS and TLS 1.2/1.3;
-- portal `auth_basic`, manifest MIME, and no-cache `sw.js`.
+- portal `auth_basic`, manifest MIME, and no-cache `sw.js`/`pcs.json`.
 
-The portal is intentionally **not** an iframe. It links to `https://pc-a...` and `https://pc-b...` in a new page/PWA window.
+The portal is intentionally **not** an iframe. It lists every registered PC and also accepts any valid name in its "直接输入电脑名" field, so a PC can be opened without editing HTML.
 
 ### Phase 4 - Windows PC
 
@@ -139,6 +148,7 @@ On each PC, as the Windows user that owns DSH:
 powershell -ExecutionPolicy Bypass -File .\scripts\windows\install-dsh-plugin.ps1
 
 # 3. Generate frpc.toml + start-dsh-web.cmd from templates.
+# Use the port printed by add-pc.sh for this PC (13080 is only an example).
 powershell -ExecutionPolicy Bypass -File .\scripts\windows\New-DshClient.ps1 `
   -PcName pc-a -BaseDomain example.com -ServerIp <SERVER_IP> `
   -FrpToken '<64-hex>' -RemotePort 13080
@@ -173,15 +183,17 @@ Expected:
 |---|---|
 | `https://dsh.BASE_DOMAIN/` without auth | `401` |
 | `https://dsh.BASE_DOMAIN/` with portal auth | `200` |
-| `https://pc-a.BASE_DOMAIN/login` | `200` |
-| `https://pc-a.BASE_DOMAIN/` without DSH session | `401` |
-| `https://pc-a.BASE_DOMAIN/` after DSH login | `200` |
+| `https://<pc-name>.BASE_DOMAIN/login` for every registered PC | `200` |
+| `https://<pc-name>.BASE_DOMAIN/` without DSH session | `401` |
+| `https://<pc-name>.BASE_DOMAIN/` after DSH login | `200` |
 | `https://www.BASE_DOMAIN/` | existing site still `200` |
 
-On Windows, also verify:
+`verify-deployment.sh` reads `/srv/dsh-portal/pcs.json`, so it checks every PC, not a hardcoded pair.
+
+On Windows, also verify (replace `<pc-name>`):
 
 ```powershell
-Get-ScheduledTask -TaskName dsh-frpc,dsh-web-pc-a | Get-ScheduledTaskInfo
+Get-ScheduledTask -TaskName dsh-frpc,dsh-web-<pc-name> | Get-ScheduledTaskInfo
 Get-Process frpc,wscript | Select-Object Id,ProcessName,MainWindowHandle
 Get-NetTCPConnection -LocalPort 3080 -State Listen
 ```
@@ -203,8 +215,9 @@ Do not call the deployment complete until all are true:
 - [ ] `frps` enabled and active; 7000 reachable from outside, 7500 loopback only.
 - [ ] `nginx -t` passes; existing site still returns 200.
 - [ ] Wildcard certificate is trusted by a normal HTTPS client (not just `curl -k`).
-- [ ] Portal returns 401/200; `manifest.webmanifest` and `sw.js` return 200.
-- [ ] PC `/login` returns 200, `/` returns 401 unauthenticated, `/` returns 200 after DSH login.
+- [ ] Portal returns 401/200; `manifest.webmanifest`, `sw.js`, and `pcs.json` return 200.
+- [ ] Every PC in `pcs.json` has `/login` 200, `/` 401 unauthenticated, `/` 200 after DSH login.
+- [ ] Adding a new PC with `add-pc.sh` passes `nginx -t`, appears in the portal, and gets a unique port.
 - [ ] `frpc` is running with `MainWindowHandle = 0`; no black console.
 - [ ] Killing frpc causes automatic restart within ~15 seconds.
 - [ ] After login/reboot, tasks start automatically.
@@ -214,7 +227,8 @@ Do not call the deployment complete until all are true:
 
 - Disable the new nginx site symlink and reload nginx; restore the backup if needed.
 - Stop/disable `frps`.
-- Stop/disable `dsh-frpc` and `dsh-web-pc-a`.
+- Stop/disable `dsh-frpc` and every `dsh-web-<pc-name>` task.
+- Remove only the relevant `/etc/nginx/dsh-pcs/<pc-name>.conf` when removing one PC; run `nginx -t` and reload.
 - Remove `/etc/nginx/ssl/dsh-relay.*` only if you are sure no other site uses it.
 - Leave DNS/certificate records until the user confirms; removing them breaks PWA installs and cached links.
 
