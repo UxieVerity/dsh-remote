@@ -1,0 +1,14 @@
+# dsh-remote bundle patch
+# ---------------------------------------------------------------------------
+# 把「远程接入」这一行插进 profile 的插件树。
+#   name: dsh-remote   从 profile 自己的 node_modules 解析（dsh plugin add 装的就是这个名字）
+#   id:   dsh-remote   必须与 lib/index.js 的 `export const name` 一致
+#
+# 本插件**没有** Config（schemastery）行配置 —— 配置不在 profile 里，而在
+# $DSH_HOME/dsh-remote/config.json（0600，可能含 frp token）。改配置走：
+#   · 对话里让模型调 dsh_remote_configure
+#   · 或 POST http://127.0.0.1:<dsh端口>/api/dsh-remote/config
+# 这样 token 不会进 profile 的 yml，也不会跟"设置页里改了一半"打架。
+- insert:
+    - id: dsh-remote
+      name: dsh-remote
