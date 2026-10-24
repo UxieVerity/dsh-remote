@@ -34,14 +34,78 @@ Get-NetTCPConnection -LocalPort 3080 -State Listen
 
 ## 403 Forbidden
 
-Identify the body/source:
+Four different layers can answer 403 — identify the body first:
 
 | Response | Source | Fix |
 |---|---|---|
-| Plain `forbidden` | DSH Host trust fence (stock/legacy path) | Ensure nginx sends `Host $host`; keep `--trusted-host host` and `host:443` for older startup paths |
-| `{"error":"request-not-trusted"}` | Third-party plugin loopback guard | That plugin only allows 127.0.0.1; not fixable in nginx |
-| HTML/plain "Non-compliance ICP Filing" / `Server: Beaver` | Cloud ICP block on port 80 | Use HTTPS; add filing if HTTP is required |
-| nginx 403 | File permissions or directory index | Check `/srv/dsh-portal` ownership/modes |
+| plain `forbidden` | **DSH Host/Origin fence** — the usual culprit | its `Host` is not loopback, not the listener bind IP, and not in `trustedHosts`; see below |
+| `{"error":"request-not-trusted"}` | a third-party plugin's loopback guard (this repo's `dsh-remote` included) | by design: that API serves 127.0.0.1 only |
+| `{"error":"unauthorized"}` | the login plugin or native auth | not logged in, or the session expired |
+| `"Non-compliance ICP Filing"` / `Server: Beaver` | cloud ICP block on port 80 | use HTTPS; add filing if HTTP is required |
+| nginx's own 403 | file permissions / directory index | check `/srv/dsh-portal` ownership and modes |
+
+### The Host fence (the 403 that impersonates a login bug)
+
+`isTrustedApiRequest()` accepts a request only when its `Host` is **one** of:
+
+1. a loopback hostname — `localhost`, `127.0.0.0/8`, `[::1]`;
+2. an authority listed in `trustedHosts`;
+3. the listener's own bind IP literal;
+
+and, when the request carries `Origin`, that origin must be the same authority (and `Sec-Fetch-Site`
+must not be `cross-site`). Everything else gets a bare `forbidden` 403.
+
+So a browser arriving through nginx sends `Host: pc-a.example.com` and is refused **even with a valid
+session cookie**. Pages and `/api/auth/*` are unaffected, which is exactly why it looks like a password
+problem. nginx cannot talk its way out of this — the value has to reach dsh.
+
+Terminal `dsh web`:
+
+```powershell
+dsh web --trusted-host pc-a.example.com
+# older startup plugin also wants the explicit port form
+dsh web --trusted-host pc-a.example.com --trusted-host pc-a.example.com:443
+```
+
+Desktop app (no `--trusted-host` on the command line): add the row override to the profile patch,
+`%USERPROFILE%\.dsh\profiles\desktop\cordis.patch.yml`:
+
+```yaml
+- id: connection
+  name: "@deepseek-ai/dsh-client-connection"
+  config:
+    trustedHosts: !!js "['pc-a.example.com', ...(ctx.webStartup?.trustedHosts ?? [])]"
+```
+
+- Entries are **bare `host[:port]`** in canonical form: lowercase, no scheme, no path. A port-less
+  entry matches the hostname on any port; `host:443` matches 443 only.
+- A malformed entry **fails the profile load loudly** — the app refuses to start. Copy the shape exactly.
+- The loader watches `cordis.patch.yml`: saving it is enough, no restart.
+- A patch replaces the targeted row's whole `config`. `recovery`, `cookieMaxAgeDays` and
+  `maxRequestBodyBytes` therefore fall back to their defaults, which is what you want here.
+
+## UI stuck on "重新连接中" / reconnecting
+
+Page loads, login succeeds, session cookie is there — but the status pill never turns green and the
+session list stays empty.
+
+Read the access log instead of the browser:
+
+```bash
+tail -60 /var/log/nginx/access.log | grep 'pc-a.example.com'
+```
+
+This signature is the Host fence, not a bad password:
+
+```text
+"POST /api/auth/status      200"    <- login "worked"
+"POST /api/settings/describe 403"   <- every few seconds, retrying
+"GET  /api/remote.mux        403"
+"POST /api/session/modelCatalog 403"
+```
+
+Fix with `trustedHosts` (see above). A healthy client shows `200` for those same endpoints — that
+flip, in the log, is the proof, and it needs no app restart.
 
 ## 404 on `/login` or assets
 
@@ -70,6 +134,9 @@ systemctl reload nginx
 ## WebSocket / UI loads but actions fail
 
 Symptom: page loads, but live updates never arrive or RPC fails; DevTools shows WebSocket `101` failing.
+
+**Check the Host fence first** if the page and login work: a `403` on `/api/remote.mux` looks exactly
+like a broken WebSocket and needs no nginx change (see [403 Forbidden](#403-forbidden)).
 
 Check nginx:
 
@@ -127,7 +194,25 @@ Do not paste tokens into chat.
 port already used
 ```
 
-Another frpc session still holds `13080`. On the PC, kill stale frpc processes; on the server, check `ss -lntp | grep 13080`. The VBS wrapper should prevent this, but a manually started frpc can conflict.
+Another frpc session still holds `13080`. On the PC, kill stale frpc processes; on the server,
+check `ss -lntp | grep 13080`. The VBS wrapper should prevent this, but a manually started frpc can conflict.
+
+With the `dsh-remote` plugin this signature has a specific cause: **the DSH process is restarted but the
+old frpc outlives it** (kill the app, or let it crash), so the new instance's frpc loses the race for
+`remotePort`. Symptom is `tunnel.state=proxy-error` while the public URL still answers — the *zombie*
+is holding the port and forwarding to the port the previous process had.
+
+```powershell
+# who is holding it, and where are they pointing
+Get-CimInstance Win32_Process -Filter "Name='frpc.exe'" |
+  ForEach-Object { "$($_.ProcessId)  $($_.CommandLine)" }
+# clear them; the plugin's supervisor respawns its own
+taskkill /F /IM frpc.exe
+```
+
+The plugin (`dsh-remote` 0.1.0) sweeps strays once per start and also treats `port already used` as recoverable:
+it sweeps, kills its own child, and retries up to twice before settling on `proxy-error`. If it still
+lands there, the survivor belongs to *another* config file — check the `-c` argument above.
 
 ## Black console window
 

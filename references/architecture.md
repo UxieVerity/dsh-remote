@@ -69,6 +69,11 @@ The main nginx site file is not edited. Only one generated file is added; the po
 1. **Internet → nginx**: TLS. The certificate is the only thing authenticating the server to the phone.
 2. **nginx → frps → PC**: plain HTTP over the frp TCP tunnel. The server root can read it. This is the main reason to use a server you control.
 3. **Portal → DSH**: portal basic auth is separate from DSH login. A user who passes basic auth still needs the DSH account.
+   Underneath sits the **Host/Origin fence** of `@deepseek-ai/dsh-client-connection`: a request is served
+   only if its `Host` is loopback, the listener's bind IP, or a `trustedHosts` entry (and any `Origin`
+   is the same authority). It answers `403` **before** authentication, so "logged in but every `/api/*`
+   is 403, page and login fine" means the fence, not a password. Terminal `dsh web` takes
+   `--trusted-host`; the desktop app needs the `connection` row override in the profile patch.
 4. **DSH Web**: `dsh-web-startup-auth` supplies the tested username/password login, allows a non-loopback bind through that auth, and protects `/api/*` plus third-party RPC routes with a signed session cookie. DSH `0.2.1-rc.2` also understands native auth; the plugin remains the tested path.
 5. **DSH launch token**: the token printed on stdout is equivalent to full control. It must not be written to shared logs; the Windows wrapper discards stdout.
 

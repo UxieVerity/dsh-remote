@@ -20,6 +20,13 @@ The relay exposes a browser UI that can run commands on each PC. Treat DSH acces
 3. **DSH login** (`dsh-web-startup-auth`) gates `/api/*` and third-party RPC routes on each PC.
 4. **frp token** authenticates frpc to frps. It does not authenticate a browser.
 
+**Below all of them sits a reachability fence, not an identity check.** `@deepseek-ai/dsh-client-connection`
+refuses (`403 forbidden`) any `/api/*` request whose `Host` is neither loopback, nor the listener bind IP,
+nor listed in `trustedHosts`; a present `Origin` must be the same authority. It runs **before**
+authentication, so the failure mode is "logged in, still 403" — do not chase it as a password problem.
+Terminal `dsh web` takes `--trusted-host <hostname>`; the desktop app has no such flag and needs the
+`connection` row override in the profile's `cordis.patch.yml` (see `troubleshooting.md`).
+
 Do not describe the portal password as "the DSH password". They are independent.
 
 ## Network exposure

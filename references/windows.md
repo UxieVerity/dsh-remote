@@ -55,7 +55,107 @@ Version notes:
 - The plugin supports DSH `>=0.1.7-rc.1 <0.3.0`.
 - If DSH is outside the supported range, DSH will skip the bundle and log the reason; do not force it.
 
-## 3. Generate the client files
+## 2.5 Tunnel: the plugin (recommended)
+
+> **Desktop (Electron) app, two things the terminal path does not have**
+>
+> - The web port is assigned at runtime and changes on every launch. Never hard-code it in
+>   `frpc.toml`; the plugin re-detects it and rewrites the render (see `plugin/README.md`).
+> - There is no `--trusted-host` flag to reach, so the Host fence must be satisfied in the profile:
+>   add the `connection` row override with `trustedHosts: ['<name>.BASE_DOMAIN', ...]` to
+>   `%USERPROFILE%\.dsh\profiles\desktop\cordis.patch.yml`. Symptom without it: the page and login
+>   work, every `/api/*` call answers 403, and the UI sits on "重新连接中". Details in
+>   `references/troubleshooting.md` (403 Forbidden).
+
+Sections 3, 5, 6, 7 and 8 are the **script** path: they render `frpc.toml`, keep frpc alive through a
+VBS wrapper, and register the `dsh-frpc` task. The `dsh-remote` plugin in this repo replaces that whole
+layer and is the default choice.
+
+What moves into the plugin:
+
+| Script path | Plugin |
+|---|---|
+| `New-DshClient.ps1` renders `frpc.toml` | renders it on every start, from `config.json` |
+| `start-frpc-hidden.vbs` (hidden console + 10s loop) | `spawn(frpc, { windowsHide: true })`, exponential backoff |
+| `dsh-frpc` scheduled task at logon | starts with DSH, exits with DSH |
+| manual `Get-Process` / `curl` checks | `dsh_remote_status` and `/api/dsh-remote/status` |
+
+Install (frpc must already be on the PC, see section 1):
+
+```powershell
+$dsh = "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd"
+& $dsh plugin --profile web add "D:\path\to\dsh-remote\plugin"
+# restart DSH afterwards (bundle layers are assembled at startup)
+```
+
+The plugin looks for frpc at `$DSH_HOME\dsh-remote\bin\frpc.exe` first, then `C:\dsh-relay\frpc.exe`,
+then `PATH`; `frpcPath` in the config overrides all of them. Moving the binary is optional.
+
+Configure it from inside DSH — ask the agent, or call the tool with a patch:
+
+```text
+pcName       pc-a            (must match add-pc.sh --name)
+baseDomain   example.com
+serverAddr   <SERVER_IP>
+serverPort   7000
+remotePort   13080           (the port add-pc.sh printed)
+token        <64-hex>        (or put it in $DSH_HOME\dsh-remote\frp-token)
+```
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:3080/api/dsh-remote/config `
+  -ContentType 'application/json' `
+  -Body '{"patch":{"pcName":"pc-a","baseDomain":"example.com","serverAddr":"203.0.113.10","remotePort":13080,"token":"<64-hex>"}}'
+```
+
+Config lives in `$DSH_HOME\dsh-remote\config.json` (mode 0600), outside the profile and outside git.
+The plugin reads the real port from its own process (`netstat -ano` by PID), so a desktop app that picks a
+random port each launch still works; if a stray `frpc.exe` from a crashed run holds the remote port it gets
+swept before spawn.
+Easiest is the settings page: **Settings → 远程接入** (restart DSH once after installing). It calls the
+plugin's loopback-only `/api/dsh-remote/*` routes, so it works on the PC itself, not through the tunnel.
+
+**Migrating from the script path** — the plugin owns the tunnel now, so drop the old task, otherwise both
+frpc processes fight over `remotePort`:
+
+```powershell
+Stop-ScheduledTask dsh-frpc -ErrorAction SilentlyContinue
+Unregister-ScheduledTask dsh-frpc -Confirm:$false -ErrorAction SilentlyContinue
+Get-Process frpc -ErrorAction SilentlyContinue | Stop-Process -Force
+```
+
+Keep `dsh-web-<name>` if you want DSH to start at logon (section 6 registers it; section 8's SYSTEM
+variant also only makes sense for the DSH task).
+
+Verify:
+
+```powershell
+Invoke-RestMethod "http://127.0.0.1:3080/api/dsh-remote/status?deep=1" | ConvertTo-Json -Depth 6
+```
+
+frpc writes to stdout under the plugin, so its log lines appear in `tunnel.log` inside the status
+response (last 300 lines, in memory) rather than in a `frpc.log` file.
+
+Read the result like this:
+
+| Field | Healthy | If not |
+|---|---|---|
+| `configured` | `true` | `issues[]` names the missing/invalid field |
+| `tunnel.state` | `connected` | `bin-missing` → frpc not found; `auth-error` → token; `proxy-error` → `remotePort` collision |
+| `health.fence` | `passed` | `blocked` → DSH was started without `--trusted-host` |
+| `health.publicProbe.status` | `200`/`302`/`401` | `502` → tunnel up, DSH down; error → DNS/nginx/cert |
+| `health.hints` | empty | it says exactly what to change |
+
+The DSH launch command is unchanged apart from the fact that the tunnel no longer needs a task:
+
+```text
+--host 127.0.0.1 --port 3080
+--trusted-host pc-a.BASE_DOMAIN --trusted-host pc-a.BASE_DOMAIN:443
+--public-url https://pc-a.BASE_DOMAIN/
+```
+
+
+## 3. Generate the client files (scripts only)
 
 ```powershell
 cd C:\path\to\dsh-remote
@@ -108,7 +208,7 @@ The first visit shows the "set administrator account" form. Set a username/passw
 
 If the page loads but remote access later fails, keep this manual test result separate from the tunnel test.
 
-## 5. Test frpc manually
+## 5. Test frpc manually (scripts only)
 
 In a second PowerShell:
 
@@ -133,7 +233,7 @@ A 200/302/303/401 from DSH means the tunnel is up. `502` means the tunnel is up 
 
 Stop the manual windows before registering tasks to avoid duplicate listeners.
 
-## 6. Register the hidden tasks
+## 6. Register the hidden tasks (scripts only)
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File C:\dsh-relay\register-pc-tasks.ps1 -PcName pc-a
@@ -174,7 +274,7 @@ The task shows `Running`; `Get-Process frpc | Select MainWindowHandle` shows `0`
 
 Do not redirect DSH stdout to a shared log. The token is equivalent to control of the DSH instance.
 
-## 7. Verify tasks
+## 7. Verify tasks (scripts only)
 
 ```powershell
 Get-ScheduledTask -TaskName dsh-frpc,dsh-web-<name> | Select TaskName,State
@@ -192,7 +292,7 @@ curl -I http://127.0.0.1:13080
 curl -I https://pc-a.BASE_DOMAIN/login
 ```
 
-## 8. Optional: frpc at boot as SYSTEM
+## 8. Optional: frpc at boot as SYSTEM (scripts only)
 
 The per-user task starts only after login. If the PC must keep the tunnel up before login, register a SYSTEM startup task:
 

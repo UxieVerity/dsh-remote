@@ -17,8 +17,13 @@ The target is an **L1 page-level relay**: the phone opens each PC's real DSH Web
 4. **Preserve `Host`.** The nginx proxy must send `proxy_set_header Host $host;`. Without it the stock Host trust fence can reject requests and the login flow can see the wrong authority.
 5. **Use DNS-01 for the wildcard certificate.** Some mainland-China clouds return an ICP block on port 80 for new subdomains before nginx is reached, so HTTP-01 can fail even when DNS and nginx are correct.
 6. **Do not log DSH launch tokens.** DSH prints a one-time token on stdout; redirect stdout to nul when running it as a background task, and keep only stderr for diagnostics.
-7. **Use the hidden frpc wrapper.** Directly scheduling `frpc.exe` opens a black console window; closing it kills the tunnel. Run it through `wscript.exe` + `start-frpc-hidden.vbs`.
-8. **Secrets never go into shell history or commit messages.** Generate them with `openssl rand`, pass them via an env file or prompt, and `chmod 600` the resulting config.
+7. **Prefer the `dsh-remote` plugin for the tunnel.** The plugin in this repo's `plugin/` runs frpc as a
+   `windowsHide` child of DSH, restarts it with backoff, and stops it with DSH — no VBS, no scheduled
+   task, no black window. Only when the plugin cannot be installed, fall back to `wscript.exe` +
+   `start-frpc-hidden.vbs`; never schedule `frpc.exe` directly (black console, and closing it kills the tunnel).
+8. **Never run two frpc for one PC.** The plugin and the legacy `dsh-frpc` task claim the same
+   `remotePort`; when switching to the plugin, stop and unregister `dsh-frpc` first.
+9. **Secrets never go into shell history or commit messages.**
 
 ## Inputs to collect
 
@@ -140,7 +145,84 @@ The portal is intentionally **not** an iframe. It lists every registered PC and 
 
 ### Phase 4 - Windows PC
 
-On each PC, as the Windows user that owns DSH:
+On each PC, as the Windows user that owns DSH. Two ways to hold the tunnel; **A is the default**,
+B is the fallback for hosts where the plugin cannot be installed.
+
+#### A. The `dsh-remote` plugin (recommended)
+
+The plugin owns the tunnel: it renders `frpc.toml` from config, runs frpc as a hidden child of DSH,
+restarts it with exponential backoff (and *stops* retrying on auth/port errors), starts with DSH and
+exits with DSH, and provides `dsh_remote_status` / `dsh_remote_control` / `dsh_remote_configure`
+plus loopback-only `/api/dsh-remote/*` routes.
+
+```powershell
+# 1. frpc 0.71.1 (match frps) into the directory the plugin searches first.
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.dsh\dsh-remote\bin" | Out-Null
+# extract frp_0.71.1_windows_amd64.zip -> frpc.exe in that bin directory
+& "$env:USERPROFILE\.dsh\dsh-remote\bin\frpc.exe" -v
+
+# 2. The remote-login plugin (unchanged: DSH needs auth for remote clients).
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\install-dsh-plugin.ps1
+
+# 3. Install this repo's tunnel plugin into the web profile.
+$dsh = "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd"
+& $dsh plugin --profile web add "D:\path\to\dsh-remote\plugin"
+
+# 4. Restart DSH (bundle layers are assembled at startup).
+```
+
+Then configure it from inside DSH — via **Settings → 远程接入** (the plugin's own page), by telling the
+agent ("configure the tunnel: pc-a, example.com, <SERVER_IP>, remotePort 13080, token ..."), or by calling
+the tool directly. The page is loopback-only: it refuses requests whose Host is the public domain, so the
+tunnel config can only be changed on the PC itself. Config lives in
+`$DSH_HOME\dsh-remote\config.json` (mode 0600), **not** in the profile yml, so the token never enters
+profile configuration.
+
+Switch off the legacy task if it was registered before:
+
+```powershell
+Stop-ScheduledTask dsh-frpc -ErrorAction SilentlyContinue
+Unregister-ScheduledTask dsh-frpc -Confirm:$false -ErrorAction SilentlyContinue
+Get-Process frpc -ErrorAction SilentlyContinue | Stop-Process -Force
+```
+
+You still start DSH with the trust flags. The plugin reports when they are missing: it probes the Host
+fence with the public authority and distinguishes 403 (fence) from 502 (tunnel up, DSH down).
+
+```text
+--host 127.0.0.1 --port 3080
+--trusted-host pc-a.BASE_DOMAIN --trusted-host pc-a.BASE_DOMAIN:443
+--public-url https://pc-a.BASE_DOMAIN/
+```
+
+**Desktop (Electron) app instead of a terminal `dsh web`?** Two things differ, and both have
+bitten real deployments:
+
+- The web port is chosen at runtime and changes every launch, so nothing may hard-code it.
+  (The plugin re-detects its own listening port, rewrites the render, restarts frpc if needed.)
+- There is **no `--trusted-host` to pass**. The Host fence then refuses every `/api/*` call from the
+  public domain name — pages and login still work — and the UI sits on "重新连接中" forever. Satisfy it in
+  the profile instead, in `%USERPROFILE%\.dsh\profiles\desktop\cordis.patch.yml`:
+
+  ```yaml
+  - id: connection
+    name: "@deepseek-ai/dsh-client-connection"
+    config:
+      trustedHosts: !!js "['pc-a.BASE_DOMAIN', ...(ctx.webStartup?.trustedHosts ?? [])]"
+  ```
+
+  Bare `host[:port]` only; a malformed entry makes the profile fail to load. The loader hot-reloads the
+  file, so saving it is enough. Proof in `/var/log/nginx/access.log`: the same `/api/*` paths flip
+  `403` -> `200`.
+
+Only `dsh-web-<name>` stays a scheduled task (it starts DSH; the plugin follows DSH):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\dsh-relay\register-pc-tasks.ps1 -PcName pc-a
+# then stop/unregister dsh-frpc as above — the plugin already holds the tunnel
+```
+
+#### B. Scripts (fallback)
 
 ```powershell
 # 1. Download frpc 0.71.1 (match frps) and place frpc.exe in C:\dsh-relay.
@@ -148,7 +230,7 @@ On each PC, as the Windows user that owns DSH:
 powershell -ExecutionPolicy Bypass -File .\scripts\windows\install-dsh-plugin.ps1
 
 # 3. Generate frpc.toml + start-dsh-web.cmd from templates.
-# Use the port printed by add-pc.sh for this PC (13080 is only an example).
+#    Use the port printed by add-pc.sh for this PC (13080 is only an example).
 powershell -ExecutionPolicy Bypass -File .\scripts\windows\New-DshClient.ps1 `
   -PcName pc-a -BaseDomain example.com -ServerIp <SERVER_IP> `
   -FrpToken '<64-hex>' -RemotePort 13080
@@ -159,16 +241,6 @@ C:\dsh-relay\start-dsh-web.cmd
 # 5. Register hidden frpc + DSH Web tasks (current user logon, no admin).
 powershell -ExecutionPolicy Bypass -File C:\dsh-relay\register-pc-tasks.ps1 -PcName pc-a
 ```
-
-The `register-pc-tasks.ps1` script uses:
-
-```text
-wscript.exe //B //Nologo C:\dsh-relay\start-frpc-hidden.vbs
-```
-
-so there is **no black console window**. The VBS waits for frpc and restarts it every 10 seconds if it exits.
-
-`run-dsh-web.cmd` suppresses stdout (which contains the DSH launch token) and keeps the task alive while port 3080 exists, so Task Scheduler can restart DSH if it dies.
 
 ### Phase 5 - End-to-end verification
 
@@ -190,7 +262,18 @@ Expected:
 
 `verify-deployment.sh` reads `/srv/dsh-portal/pcs.json`, so it checks every PC, not a hardcoded pair.
 
-On Windows, also verify (replace `<pc-name>`):
+On Windows, also verify. With the plugin (path A):
+
+```powershell
+# In DSH: "check the remote-access status" -> dsh_remote_status, or:
+Invoke-RestMethod "http://127.0.0.1:3080/api/dsh-remote/status?deep=1" | ConvertTo-Json -Depth 6
+```
+
+Expected: `configured = true`, `tunnel.state = "connected"`, `health.level = "ok"`, and
+`health.missingTrustedHosts` empty (or only the informational `:443` variant). No `frpc` console
+window exists because frpc is a `windowsHide` child of DSH.
+
+With the scripts (path B):
 
 ```powershell
 Get-ScheduledTask -TaskName dsh-frpc,dsh-web-<pc-name> | Get-ScheduledTaskInfo
@@ -218,16 +301,24 @@ Do not call the deployment complete until all are true:
 - [ ] Portal returns 401/200; `manifest.webmanifest`, `sw.js`, and `pcs.json` return 200.
 - [ ] Every PC in `pcs.json` has `/login` 200, `/` 401 unauthenticated, `/` 200 after DSH login.
 - [ ] Adding a new PC with `add-pc.sh` passes `nginx -t`, appears in the portal, and gets a unique port.
-- [ ] `frpc` is running with `MainWindowHandle = 0`; no black console.
+- [ ] Exactly one frpc serves each PC: either the plugin or the `dsh-frpc` task, never both.
+- [ ] Plugin path: `dsh_remote_status` shows `configured: true`, `tunnel.state: "connected"`,
+      `health.fence: "passed"`, and no console window appears for frpc.
+- [ ] Plugin path: killing frpc (Task Manager) makes the plugin re-spawn it within ~60s; a token
+      mismatch leaves it in `auth-error` and does **not** loop forever.
+- [ ] Script path: `frpc` is running with `MainWindowHandle = 0`; no black console.
 - [ ] Killing frpc causes automatic restart within ~15 seconds.
-- [ ] After login/reboot, tasks start automatically.
-- [ ] No real domain/IP/token/password is present in git.
+- [ ] After login/reboot, the tunnel comes up automatically (plugin follows DSH; `dsh-web-<name>` starts DSH).
+- [ ] No real domain/IP/token/password is present in git (`$DSH_HOME/dsh-remote/config.json` lives outside the repo).
+
 
 ## Rollback
 
 - Disable the new nginx site symlink and reload nginx; restore the backup if needed.
 - Stop/disable `frps`.
-- Stop/disable `dsh-frpc` and every `dsh-web-<pc-name>` task.
+- Stop/disable `dsh-frpc` and every `dsh-web-<pc-name>` task. If the plugin owns the tunnel, also stop it
+  (`dsh_remote_control stop`) and remove the plugin: `dsh plugin --profile web remove dsh-remote`,
+  then delete `$DSH_HOME/dsh-remote/` (it holds the token) if the PC is being retired.
 - Remove only the relevant `/etc/nginx/dsh-pcs/<pc-name>.conf` when removing one PC; run `nginx -t` and reload.
 - Remove `/etc/nginx/ssl/dsh-relay.*` only if you are sure no other site uses it.
 - Leave DNS/certificate records until the user confirms; removing them breaks PWA installs and cached links.
@@ -239,6 +330,6 @@ Read these before editing a live host:
 - `references/architecture.md` - data flow, trust boundaries, why L1.
 - `references/variables.md` - variable/secret handling and placeholders.
 - `references/server.md` - full Ubuntu walkthrough and commands.
-- `references/windows.md` - full Windows walkthrough, hidden tasks, logon caveats.
+- `references/windows.md` - full Windows walkthrough, plugin or scripts, hidden tasks, logon caveats.
 - `references/security.md` - threat model and hardening checklist.
 - `references/troubleshooting.md` - 502/401/403, cert, WebSocket, task and token issues.
