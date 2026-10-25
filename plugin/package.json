@@ -1,6 +1,6 @@
 {
   "name": "dsh-remote",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DSH 插件：把终端里的 dsh 经 frp 隧道连到自建服务器 —— 渲染 frpc.toml、隐藏窗口跑 frpc、断线重拉、随 dsh 起停、体检与状态工具。顶替原来的 VBS + 计划任务 + 手写配置。",
   "keywords": [
     "dsh",

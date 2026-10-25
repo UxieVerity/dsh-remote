@@ -18,7 +18,7 @@ Phase 4-A，别自己另起一套。
 5. 让用户验收时用「看一下远程接入状态」（= `dsh_remote_status`，`deep=true` 会真探公网），
    别让他去 `Get-Process` 里找。
 
-## ⚠️ 五个容易踩的坑
+## ⚠️ 六个容易踩的坑
 
 - **Host 围栏（403）**。DSH 对非回环 Host 有信任围栏，少了它 nginx 进来的 `/api/*` 一律 403，
   而页面和登录反而正常——症状是「能登录、一直重新连接中」。终端 `dsh web` 传 `--trusted-host`；
@@ -26,7 +26,10 @@ Phase 4-A，别自己另起一套。
   写裸 `host[:port]`，写错会让应用起不来，改完热加载生效）。
 - **桌面版端口每次随机**。插件会实时探测并重写 `frpc.toml`；别手写死端口后就不再管。
 - **重启应用会留下旧 frpc** 抢 `remotePort` → `proxy-error`（此时公网可能还是通的，别被骗）。
-  插件会清扫并重试两轮；救急 `taskkill /F /IM frpc.exe`。
+- **两种冲突要分开救，别一锅端**。`port already used`（本机僵尸）才值得 `sweepStrays`；
+  `proxy already exists`（服务器那边还没释放，持有者常常是另一个合法 frpc）**绝不能扫**——
+  两边互相扫会变成互杀死循环：公网 302/502 每秒跳、`spawnCount` 猛涨、而 frpc 进程数为 0。
+  现在只退避重试（上限 `CONFLICT_TRIES=5`），抢不到就停在 `proxy-error` 让对方独占。
 - **`file:` 依赖会被 pnpm 拷贝**，改完插件源码必须 `dsh plugin remove` 再 `add`，否则改的不生效
   （本仓库开发时踩过）。
 - **别把 token 写进仓库/issue/日志**。它在 `config.json`（0600）或 `frp-token` 文件里；
@@ -41,7 +44,7 @@ Phase 4-A，别自己另起一套。
 - `lib/supervisor.js` —— 进程看护：`windowsHide` 子进程、日志环、状态机、退避重拉、清理残留 pid
 - `lib/trust.js` —— 体检：本地监听、Host 围栏（会真的带公网 Host 打一次本地）、公网入口
 - `lib/hostdeps.js` —— 从宿主树取 `defineTool`（拿不到退到本地等价实现）
-- `test/run.mjs` —— `node test/run.mjs`，42 项，跑完才知道有没有把状态机改坏
+- `test/run.mjs` —— `node test/run.mjs`，43 项，跑完才知道有没有把状态机改坏
 
 ## 约定
 

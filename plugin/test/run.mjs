@@ -288,13 +288,42 @@ await testAsync('remotePort 被占 → 清扫并重试，而不是躺平', async
   assert.equal(sup.getState(), 'reconnecting', '不能直接躺平成 proxy-error')
   assert.equal(kids[0].killed, true, '应该把自己这个也杀掉重来')
   assert.ok(
-    sup.snapshot().log.some((e) => String(e.text).includes('清扫残留 frpc')),
-    '应该留下清扫日志',
+    sup.snapshot().log.some((e) => String(e.text).includes('remotePort 被占')),
+    '应该留下冲突日志',
   )
   // 真进程会 exit，这里手动模拟，重启由退避接管
   kids[0].emit('exit', 1, null)
   await new Promise((r) => setTimeout(r, 120))
   assert.equal(kids.length, 2, '应该重拉了一次')
+  sup.stop('测试结束')
+})
+
+await testAsync('代理名被占 → 有上限地重试，绝不无限重拉', async () => {
+  const kids = []
+  const sup = createSupervisor({
+    cwd: sandbox,
+    prepare: () => ({ tomlPath: join(sandbox, 'frpc.toml'), bin: join(sandbox, 'frpc.exe') }),
+    spawnImpl: () => { const c = fakeChild(9000 + kids.length); kids.push(c); return c },
+    initialDelayMs: 5,
+    maxDelayMs: 10,
+  })
+  sup.start()
+  // 服务器那边同名代理还没释放：每次都报这个
+  const line = '2026/10/25 12:38:50 [W] [server/control.go:756] [x] new proxy [pc-b-dsh] type [tcp] error: proxy [pc-b-dsh] already exists\n'
+  for (let i = 0; i < 10; i += 1) {
+    if (sup.getState() === 'proxy-error') break
+    const kid = kids[kids.length - 1]
+    kid.stdout.emit('data', line)
+    if (sup.getState() === 'proxy-error') break
+    kid.emit('exit', 1, null)
+    await new Promise((r) => setTimeout(r, 30))
+  }
+  assert.equal(sup.getState(), 'proxy-error', '试满后必须停下来等人处理')
+  assert.ok(kids.length <= 8, '重拉次数必须有上限，实际拉了 ' + kids.length + ' 次')
+  assert.ok(
+    sup.snapshot().log.some((e) => String(e.text).includes('代理名被占')),
+    '应该说明是代理名被占',
+  )
   sup.stop('测试结束')
 })
 

@@ -23,6 +23,9 @@ import { pidFilePath } from './paths.js'
 const DEFAULT_MAX_LOG_LINES = 300
 
 /** frpc 的日志里这几种行决定状态。 */
+/** 同一份配置的代理名/端口冲突，最多重试几次就认命（避免无限重拉）。 */
+const CONFLICT_TRIES = 5
+
 const PATTERNS = [
   { re: /login to (?:the )?server success/i, kind: 'connected' },
   { re: /start proxy success/i, kind: 'proxy' },
@@ -153,8 +156,11 @@ export function createSupervisor(opts) {
    * 「状态 connected 但公网 502/一直 proxy-error」。起之前先扫掉。
    */
   let sweptThisStart = false
-  /** 端口被占的自愈重试次数（每次成功连上清零）。 */
-  let proxyConflictRetries = 0
+  /**
+   * 「代理名被占 / 端口被占」这类冲突的重试次数（每次成功连上清零）。
+   * 必须有上限：冲突时状态是 reconnecting，而 reconnecting 会被 exit 处理无限重拉。
+   */
+  let conflictTries = 0
   const sweepStrays = (tomlPath) => {
     if (process.platform !== 'win32' || !tomlPath) return
     try {
@@ -234,7 +240,7 @@ export function createSupervisor(opts) {
         for (const p of PATTERNS) {
           if (!p.re.test(line)) continue
           if (p.kind === 'connected') {
-            proxyConflictRetries = 0
+            conflictTries = 0
             if (connectedAt === 0) connectedAt = Date.now()
             setState('connected', 'login to server success')
             // 成功连上并稳定一会儿就把退避档位清掉
@@ -247,16 +253,27 @@ export function createSupervisor(opts) {
             setState('auth-error', lastError)
           } else if (p.kind === 'proxy-error') {
             lastError = line.trim().slice(0, 400)
-            // 「端口被占」几乎总是上一次没退干净的 frpc 还攥着 remotePort
-            // （dsh 崩溃 / 重启应用时最容易发生）。这时不能就此躺平：
-            // 扫掉残留、把自己这个也重启一次，重试两轮再认命。
-            const portBusy = /port already used|proxy .* already (?:used|exists)/i.test(line)
-            if (portBusy && proxyConflictRetries < 2 && child !== null) {
-              proxyConflictRetries += 1
-              pushLog('host', 'remotePort 被占：清扫残留 frpc 后重试（第 ' + proxyConflictRetries + ' 次）')
-              setState('reconnecting', '端口被占，清扫后重试')
-              try { sweepStrays(tomlPath) } catch { /* 扫不掉就继续试 */ }
+            // 两种冲突要分开处理，因为成因完全不同：
+            //  1) port already used —— 本机上还有僵尸 frpc 攥着 remotePort（重启应用后最常见），清扫它
+            //  2) proxy already exists —— 服务器那边同名代理还没释放（上一个 frpc 刚死/正在死），等它
+            // 注意：这里必须设 reconnecting 才能让 exit 去重拉，而 reconnecting 本身没有次数上限，
+            // 所以用 conflictTries 兜底 —— 否则「名字被占」会变成每秒一次的无限重试。
+            const portBusy = /port already used/i.test(line)
+            const nameTaken = /proxy .* already exists/i.test(line)
+            if ((portBusy || nameTaken) && conflictTries < CONFLICT_TRIES && child !== null) {
+              conflictTries += 1
+              const why = portBusy ? 'remotePort 被占（本机残留 frpc）' : '代理名被占（多半是孤儿 frpc 自动重连）'
+              pushLog('host', why + '：稍后重试（第 ' + conflictTries + '/' + CONFLICT_TRIES + ' 次）')
+              setState('reconnecting', why + '，重试中')
+              // 只有 portBusy 才清扫：那是本机僵尸，杀掉它肯定对。
+              // nameTaken 千万别扫 —— 名字的持有者往往是另一个合法的 frpc（另一个 dsh 进程、
+              // 或刚退出的孤儿正在自动重连）。清扫它会变成「A 杀 B、B 杀 A」的互杀死循环，
+              // 现场现象就是公网 302/502 每秒跳变、spawnCount 疯涨、而 frpc 进程数为 0。
+              // 这里只退避重试，有上限；抢不到就让状态停在 proxy-error，让对方独占。
+              if (portBusy) { try { sweepStrays(tomlPath) } catch { /* 扫不掉就继续试 */ } }
               try { child.kill('SIGKILL') } catch { /* 让它自己退，exit 会触发重启 */ }
+            } else if (nameTaken) {
+              setState('proxy-error', lastError + ' —— 服务器上还有同名代理没释放；确认没有第二个 frpc 在用同一份配置，或稍等再 start')
             } else {
               setState('proxy-error', lastError)
             }
