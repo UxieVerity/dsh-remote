@@ -74,8 +74,12 @@ echo
 echo "== HTTPS =="
 check_code "portal unauthenticated" 401 "https://dsh.${BASE_DOMAIN}/"
 check_code "portal authenticated" 200 "https://dsh.${BASE_DOMAIN}/" yes
-check_code "portal manifest" 200 "https://dsh.${BASE_DOMAIN}/manifest.webmanifest" yes
-check_code "portal service worker" 200 "https://dsh.${BASE_DOMAIN}/sw.js" yes
+# The three PWA assets must answer WITHOUT basic auth, otherwise the browser cannot
+# fetch the manifest / register the service worker and installability silently dies.
+check_code "portal manifest (no auth)" 200 "https://dsh.${BASE_DOMAIN}/manifest.webmanifest"
+check_code "portal service worker (no auth)" 200 "https://dsh.${BASE_DOMAIN}/sw.js"
+check_code "portal icon 192 (no auth)" 200 "https://dsh.${BASE_DOMAIN}/icon-192.png"
+check_code "portal icon 512 (no auth)" 200 "https://dsh.${BASE_DOMAIN}/icon-512.png"
 check_code "portal PC registry" 200 "https://dsh.${BASE_DOMAIN}/pcs.json" yes
 
 mapfile -t PCS < <(pc_names)

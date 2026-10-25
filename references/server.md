@@ -243,6 +243,71 @@ The portal is static HTML/JS in `/srv/dsh-portal`:
 
 Basic auth is enforced by nginx, not JavaScript.
 
+### Portal installability (the three things that actually break it)
+
+The portal is a launcher PWA: `start_url: "/"`, `display: standalone`, network-only `sw.js`,
+registered from `index.html`. Install breaks in exactly three ways, all of them silent:
+
+1. **The PWA assets sit behind basic auth.** `manifest.webmanifest`, `sw.js` and `icon-*.png`
+   must answer **without** credentials — a 401 on the manifest or on the SW kills installability
+   with no visible error. Keep `auth_basic off;` in those three locations; the page itself stays
+   protected (`/` must still return 401).
+2. **Combined icon purpose.** `"purpose": "any maskable"` on one icon is rejected by Chromium;
+   list `any` and `maskable` as separate entries.
+3. **Wrong MIME.** nginx's `mime.types` has no `.webmanifest` mapping, so the location needs
+   `default_type application/manifest+json;` or the browser refuses the manifest.
+
+Also note the origin boundary: tapping a PC link inside the installed portal leaves the standalone
+window, because each `<pc>.<domain>` is a different origin. That is why every PC gets its own
+installable manifest (§6.5) — the portal is the launcher, the PC app is the destination.
+
+## 6.5 Each PC as an installable PWA
+
+DSH serves its own `manifest.webmanifest` (name / `short_name` / `display: fullscreen`, one SVG icon)
+but **no service worker** — `/sw.js` answers 404. Chromium therefore only offers a bookmark-style
+shortcut (address bar still visible), which reads as "the PWA does not work". Three static files plus one
+injection turn every PC into a real install target, **without touching the PC**.
+
+Static files in `/srv/dsh-pwa` (the PNG icons can be copied from `/srv/dsh-portal`); repo copies live in
+`scripts/server/pwa/`:
+
+| file | role |
+|---|---|
+| `manifest.webmanifest` | `display: fullscreen` + 192/512 PNG icons |
+| `sw.js` | network-only service worker (`install` / `activate` / `fetch`), caches nothing **on purpose** |
+| `pwa-register.js` | registers the SW on `load`, swallows failures |
+
+Per PC, inside the existing vhost:
+
+```nginx
+location ~ ^/(sw\.js|manifest\.webmanifest|pwa-register\.js|icon-192\.png|icon-512\.png)$ {
+    root /srv/dsh-pwa;
+    default_type application/manifest+json;
+    add_header Cache-Control "no-cache";
+}
+
+location / {
+    sub_filter_once on;
+    sub_filter '</head>' '<script src="/pwa-register.js"></script></head>';
+    proxy_set_header Accept-Encoding "";   # sub_filter needs an uncompressed body
+    # ... the usual proxy_pass block
+}
+```
+
+- The regex location wins over the `/` prefix, so those five paths never enter the tunnel.
+- DSH serves its HTML uncompressed, which is what makes `sub_filter` viable. If it ever starts sending
+  gzip the injection silently stops (no breakage, just no install prompt) —
+  check with `curl -s https://pc-a.$BASE_DOMAIN/ | grep -c pwa-register`.
+- The SW is deliberately network-only: a stale cache in front of the tunnel is a support nightmare.
+
+Verify:
+
+```bash
+curl -s -o /dev/null -w '%{http_code} %{content_type}\n' https://pc-a.$BASE_DOMAIN/sw.js
+curl -s https://pc-a.$BASE_DOMAIN/manifest.webmanifest | head -3
+curl -s https://pc-a.$BASE_DOMAIN/ | grep -c pwa-register    # expect 1
+```
+
 ## 7. Verify
 
 ```bash

@@ -207,7 +207,27 @@ is holding the port and forwarding to the port the previous process had.
 Get-CimInstance Win32_Process -Filter "Name='frpc.exe'" |
   ForEach-Object { "$($_.ProcessId)  $($_.CommandLine)" }
 # clear them; the plugin's supervisor respawns its own
-taskkill /F /IM frpc.exe
+taskkill /F /IM
+
+### `proxy already exists` is NOT `port already used`
+
+```text
+start error: proxy [pc-b-dsh] already exists
+```
+
+Same tunnel, different cause, **opposite remedy**. `port already used` means a local zombie holds
+`remotePort` — sweeping frpc is correct. `proxy already exists` means *the server still has that
+proxy name registered*, usually because the frpc from the previous DSH process is still alive and
+auto-reconnecting. Sweeping **there** is a trap: the process holding the name may be legitimate, and
+two supervisors each sweeping the other's child produce a mutual-kill livelock.
+
+Symptom of that livelock, if you ever see it: the public URL flips 302/502 every couple of seconds,
+`tunnel.spawnCount` climbs by several per 10 s, and `Get-Process frpc` shows **zero** processes.
+
+- `dsh-remote` 0.1.1+: only `port already used` triggers a sweep; `already exists` just backs off,
+  bounded by `CONFLICT_TRIES` (5), then parks in `proxy-error` and leaves the name to whoever owns it.
+- Manual cure: stop the tunnel, `taskkill /F /IM frpc.exe`, then start it once — a single clean
+  frpc wins the name immediately. frpc.exe
 ```
 
 The plugin (`dsh-remote` 0.1.0) sweeps strays once per start and also treats `port already used` as recoverable:
@@ -256,6 +276,16 @@ Look for:
 - Icons 192/512 must be reachable.
 - Service worker scope must be `/`; check DevTools -> Application -> Service Workers.
 - Some browsers require a user gesture / "Add to Home Screen" menu; there is no automatic install prompt.
+
+**The DSH-specific version of this.** DSH ships a manifest (`display: fullscreen`) but registers no
+service worker, and `/sw.js` is 404. Chromium then only creates a browser shortcut, so the app still
+opens with an address bar — "PWA 不生效". Fix: serve `manifest.webmanifest`, `sw.js` and the PNG icons
+from nginx per PC subdomain and register the SW from the page. Recipe, files and caveats:
+`server.md` §6.5 + `scripts/server/pwa/`.
+
+- Chrome caches the old manifest: reload, or open the site twice.
+- A shortcut added **before** the fix stays a shortcut — delete it from the home screen, add it again.
+- Confirm the SW took: DevTools -> Application -> Service Workers should show `/sw.js` activated.
 
 ## Existing website broke
 
